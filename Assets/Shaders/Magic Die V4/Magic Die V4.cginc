@@ -197,7 +197,6 @@ bool ELRaycast(ELRay ray, out float3 objectPos, out float3 objectNormal, out flo
 {   
     its = 0;
     reach = 0.0;
-    
     if (hitsFrame)
     {
         // Hits the frame immediately

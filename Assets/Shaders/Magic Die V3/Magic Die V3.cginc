@@ -94,7 +94,7 @@ void StashGlobals(FragmentInput input)
 bool ELRaycast(ELRay ray, out float3 objectPos, out float3 objectNormal, out float material, out uint iterations, out float reach)
 {
     iterations = 0;
-    reach = 0.0;    
+    reach = 0.0;     
     if (face == 7)
     {
         // Hits the frame immediately
