@@ -10,7 +10,8 @@
 #define TAU 6.28318530718
 #define PHI (sqrt(5)*0.5 + 0.5)
 #define sqrt_2 1.41421356237
-#define sqrt_half = 0.70710678118
+#define sqrt_half 0.70710678118
+#define TAW 6.28318530718 * 2. / 3.
 
 
 
@@ -40,6 +41,89 @@
 //
 ////////////////////////////////////////////////////////////////
 
+const float3 stripedcolors[6] = {
+  vec3(245./255.,  23./255.,  22./255.),
+  vec3(248./255., 210./255.,  26./255.),
+  vec3( 47./255., 243./255., 224./255.),
+  vec3( 96./255., 192./255.,  83./255.),
+  vec3(250./255.,  38./255., 160./255.),
+  vec3(174./255., 129./255., 255./255.)
+};
+// A single iteration of Bob Jenkins' One-At-A-Time hashing algorithm.
+uint shuffle(uint x) {
+    x &= 255u;
+    x += ( x << 10u );
+    x ^= ( x >>  6u );
+    x += ( x <<  3u );
+    x ^= ( x >> 11u );
+    x += ( x << 15u );
+    x &= 255u;
+    return x;
+}
+vec3 stripes(float n) {
+  int m = int(floor(n) - 6.0 * floor(n / 6.0));
+  return mix(
+    stripedcolors[m % 6],
+    stripedcolors[(m + 1) % 6],
+    smoothstep(0.9, 1.0, fract(n))
+  );
+}
+// corner vector
+vec2 cvec(vec2 uv, float time) {
+  float n = TAU * float(shuffle(uint(uv.x) + shuffle(uint(uv.y)))) / 256. + time;
+  return vec2(cos(n), sin(n));
+}
+
+float posmod(float x, float y) {
+  return x - y * (floor(x / y));
+}
+
+// fade function defined by ken perlin
+float fade(float t) {
+    return (t * t * t * (t * (t * 6. - 15.) + 10.));
+}
+
+
+// perlin generator
+float perlin(vec2 uv, float offset) {
+  vec2 i = floor(uv);
+  vec2 f = fract(uv);
+
+  vec2 u = fade(f);
+
+  return
+  mix(
+    mix(
+      dot( cvec(i + vec2(0.0,0.0), offset ), f - vec2(0.0,0.0) ),
+      dot( cvec(i + vec2(1.0,0.0), offset ), f - vec2(1.0,0.0) ),
+    u.x),
+    mix(
+      dot( cvec(i + vec2(0.0,1.0), offset ), f - vec2(0.0,1.0) ),
+      dot( cvec(i + vec2(1.0,1.0), offset ), f - vec2(1.0,1.0) ),
+    u.x),
+  u.y);
+}
+float valNoise(float x) {
+  uint xi = uint(floor(posmod(x, 256.)));
+  float valL = float(shuffle(xi));
+  float valR = float(shuffle(xi + 1u));
+  return mix(valL, valR, fade(fract(x))) / 255. - 0.5;
+}
+float gradNoise(float x) {
+  uint xi = uint(floor(posmod(x, 256.)));
+  float xf = fract(x);
+  float gradL = float(shuffle(xi)) / 255. - 0.5;
+  float gradR = float(shuffle(xi + 1u)) / 255. - 0.5;
+  return mix(gradL * xf, gradR * (xf - 1.), fade(xf));
+}
+vec2 shiftCenter(vec2 uv, float t, float strength) {
+  vec2 d = vec2(
+    valNoise(uv.x + t * 1.41421356) + gradNoise(uv.x - t),
+    valNoise(uv.y - t) + gradNoise(uv.y + t * 1.7320508)
+  );
+  return uv + d * strength;
+}
+
 
 float3 BlendLight (float3 base, float3 blend) // soft light
 {
@@ -64,15 +148,36 @@ float softsquare(float x) {
 }
 
 // xor-ish behavior for floats
+//#define flXor(x, y)  x + y - 2. * (x * y)        // xor-ish behavior for floats
 float flXor(float x, float y) {
     return x + y - 2. * (x * y);
 }
 
 // folds 0>1>2>3>4... to 0>1<0>1<0...
-float fold(float x) {
+// #define fold(x)      abs(1. - mod(x, 2.))        // folds 0>1>2>3>4... to 0>1<0>1<0...
+float fold1(float x) {
     return abs(1. - mod(x, 2.));
 }
+// #define S(a,b,r)    smoothstep( -blur, blur, fold( (lenSq + lenAdd) * (a) + angle * b - t ) - r )
+float fold2(float x) {
+    return abs(mod(x, 2.0) - 1.0);
+}
 
+float foldPlus(float x) {
+    return log(0.5 + fold2(x));
+}
+
+float smoothThres(float x, float strength) {
+    return smoothstep(0.5 - strength, 0.5 + strength, x);
+}
+
+float smoothFold(float x, float strength) {
+    return smoothThres(fold2(x), strength);
+}
+
+vec3 colMap(float x, vec3 a, vec3 b) {
+    return a * (1.0 - x) + b * x;
+}
 vec3 gradient(float x, float y) {
     const float _2PI3 = 2.094395102393193;
     float g1 = softsquare(x);
@@ -84,6 +189,25 @@ vec3 gradient(float x, float y) {
 float spikes(float x) {
     x = 1. - abs(sin(x));
     return x * x;
+}
+
+float trapezoid(float x) {
+    x = fract(x);
+    if (x < 0.25) {
+        return 4.0 * x;
+    } else if (x < 0.5) {
+        return 1.;
+    } else if (x < 0.75) {
+        return -4.0 * x + 3.0;
+    } else {
+        return 0.;
+    }
+}
+
+vec3 gradient(float y) {
+    vec3 x = trapezoid(y) * vec3(1.0, 0.0, 0.0)
+           + trapezoid(y - 0.25) * vec3(0.0, 1.0, 1.0);
+    return x;
 }
 vec3 whiteOutBlend(vec3 n1, vec3 n2) {
 	return normalize(vec3(n1.xy + n2.xy, n1.z*n2.z));   
@@ -98,9 +222,7 @@ float tick(float t){
  		) / ticksPerRot
     ;
 }
-float fspiral01(float x) {
-  return max(0.0, sin(x) * 0.75 + 0.25);
-}
+
 float fspiral02(float x)
 {
     float n = frac(x / 3.14159265);
@@ -506,13 +628,28 @@ vec3 fcol01(float x) {
 }
 
 // gives pure saturated color from input [0, 6) for phase
-vec3 fhue01(float x) {
+vec3 hue01(float x) {
     x = mod(x, 6.);
     return clamp(vec3(
         abs(x - 3.) - 1.,
         -abs(x - 2.) + 2.,
         -abs(x - 4.) + 2.
     ), 0., 1.);
+}
+vec3 hue02(float t) {
+    return smoothstep(0.0, 1.0, vec3(sin(t * TAU), sin(t * TAU + TAW), sin(t * TAU - TAW)) + 1. / 2.);
+}
+
+vec3 hue03(float x) {
+    return (vec3(
+    	sin(x),
+        sin(x + 2. * PI / 3.),
+        sin(x + 4. * PI / 3.)
+    ) + 1.0) * 0.6;
+}
+
+float star1(float angle, float d, float roundness) {
+    return foldPlus(angle * 10.) + d * roundness;
 }
 
 // does pseudo overexposure filter
@@ -576,6 +713,291 @@ float4x3 randCol(uint x) {
     );
     return float4x3(col0, col1, col2, col3);
 }
+
+float2x3 randCol2(uint x) {
+    uvec3 col0 = uvec3(
+         x        & 1u,
+        (x >> 1u) & 1u,
+        (x >> 2u) & 1u
+    );
+    uint y = x ^ ((x >> 3u) % 6u + 1u);
+    uvec3 col2 = uvec3(
+         y        & 1u,
+        (y >> 1u) & 1u,
+        (y >> 2u) & 1u
+    );
+    return float2x3(col0, col2);
+}
+
+uint roll0(uint2 xy, uint t) {
+    const uint a = 1664525u;
+    const uint m = 1013904223u;
+
+    uint seed = 65538u * xy.x + 782651u * xy.y + 1979u * t;
+    
+    uint x0 = (seed * a) % m;
+    uint x = (x0 * a) % m;
+    
+    return x & 65535u;
+}
+vec3 roll1(uint2 xy, uint t) {
+    const uint a = 1664525u;
+    const uint m = 1013904223u;
+
+    uint seed = 1818420u * xy.x + 78265178u * xy.y + 237698117u * t;
+    
+    uint x0 = (seed * a) % m;
+    uint x = (x0 * a) % m;
+    
+    vec3 xvec = vec3(x & 3u, (x >> 4u) & 3u, (x >> 8u) & 3u);
+    return xvec / 3.;
+}
+vec3 roll2(uint2 xy, uint t) {
+    const uint a = 1664525u;
+    const uint m = 1013904223u;
+
+    uint seed = 1818420u * xy.x + 78265178u * xy.y + 237698117u * t;
+    
+    uint x0 = (seed * a) % m;
+    uint x = (x0 * a) % m;
+    
+    vec3 xvec = vec3(x & 3u, (x >> 4u) & 3u, (x >> 8u) & 3u);
+    return xvec / 3.;
+}
+vec3 roll3(uint2 xy, uint t) {
+    const uint a = 1664525u;
+    const uint m = 1013904223u;
+
+    uint seed = 1818420u * xy.x + 78265178u * xy.y + 237698117u * t;
+    
+    uint x0 = (seed * a) % m;
+    uint x = (x0 * a) % m;
+    
+    vec3 xvec = vec3(x & 3u, (x >> 4u) & 3u, (x >> 8u) & 3u);
+    return xvec / 3.;
+}
+
+////////////////////////////////////////////////////////////////
+//
+//             PRESETS
+//
+////////////////////////////////////////////////////////////////
+
+//deepfry
+vec3 fn01(vec2 rt) {
+    return deepfry(hue01(rt.x * 3. + iTime), 1. + 0.5 * sin(rt.x * 6. + rt.y * 3. + iTime * 4.));
+}
+//spectrum
+vec3 fn02(vec2 uv) {
+    float distSq = uv.x*uv.x+uv.y*uv.y;
+    float angle = atan(uv.x, uv.y);
+    int ring = int(iTime + log(distSq) * 0.6);
+    float rand = rcol02(uint(ring)) - 0.5;
+    float angleAdd = (iTime * rand);
+    
+    return spectrum(
+        angleAdd + angle / TAU * 3. 
+    );
+}
+
+//circles 
+vec3 fn03(vec2 uv) {
+    float rotLen = 10.;
+    float distLen = 0.4;
+    float loopLen = 60. * rotLen * distLen;
+    
+    float T = mod(iTime, loopLen);
+    float distSq = uv.x*uv.x+uv.y*uv.y;
+    float angle = atan(uv.x, uv.y);
+    float angleAdd = fract(T / rotLen);
+    float distAdd = fract(T / distLen);
+    
+    float which = (step(fract(angleAdd * 2. + angle * 2. / TAU + distSq * 0.21), .5));
+    
+    float progress = mod(which * 4. + distSq * 3. + T, loopLen);
+    
+    uint colID = fHash01(uint(int(progress)));
+    float2x3 colors = randCol2(colID);
+    vec3 colA = mix(colors[0], colors[1],
+      logStripe(uv, distAdd, angleAdd * TAU)
+    );
+    vec3 colB = mix(colors[0], colors[1],
+      logStripe(uv, distAdd, angleAdd * TAU + TAU / 4.)
+    );
+    
+    vec3 col = mix(colA, colB, which) * 0.8 + fract(progress) * 0.2;    
+}
+
+vec3 fn04(vec2 rt) {
+    return deepfry(
+        hue01(rt.x * 3. + iTime),
+        1. + 0.5 * sin(rt.x * 6. + rt.y * 3. + iTime * 4.)
+    );
+}
+//rainbowglitch
+vec3 fn05(vec2 uv) {
+    float Time = fract(iTime / 4.);
+    uint time = uint(iTime * 20.);
+    float linDis = distance(uv, (vec2)0);
+    float lolDis = 14. * log(linDis) - 6. * linDis;
+    
+    vec2 rt = vec2(
+        256. + lolDis +
+        0.5 * sin(0.4 * lolDis + Time * 2. * TAU)
+    ,
+        256. + mod(atan(uv.x, uv.y) / TAU * 64. +
+        0.3 * sin((0.2 * lolDis + 2.0 * Time) * TAU), 32.)
+    );
+    float x = smoothstep(0.4,0.6,float(roll0(uvec2(rt), time)) / 65536.);
+}
+
+//undula [mild spaz?
+vec3 fn06(vec2 uv) {
+    float Time = fract(iTime / 4.);
+    uint time = uint(floor(iTime * 5.));
+    float linDis = distance(uv, (float2)0);
+    float lolDis = 7. * log(linDis) - 3. * linDis;
+    float angle = atan(uv.x, uv.y) / 3.14159265358979 / 2.;
+    
+    vec3 x = (float3)0;
+    if (linDis < 0.15) {
+        x = (float3)abs(1. - 2. * fract(-angle + 0.1 * lolDis + 4. * Time));
+    } else {
+        vec2 rt = vec2(256. + Time + lolDis + 0.5 * sin(0.4 * lolDis + Time * 2. * 3.14159265358979), 
+                        256. + mod(angle * 32.0 + 0.3 * sin((0.2 * lolDis+Time * 2.0) * 3.14159265358979 * 2.),
+                        32.));
+        if (distance(fract(rt), (float2)0.5) < 0.5) {
+            x = roll1(uint2(rt), time);
+        }
+    }
+}
+
+//blep [spaz]
+vec3 fn07(vec2 uv) {
+    float Time = fract(iTime / 4.);
+    uint time = uint(floor(iTime * 5.));
+    float linDis = distance(uv, (float2)0);
+    vec3 x;
+    float angle = atan(uv.x, uv.y) / 3.14159265358979 / 2.;
+    if (linDis < 0.15) {
+        x = (float3)abs(1. - 2. * fract(- angle + 16. * linDis + Time));
+    } else {
+        float lolDis = 14. * log(linDis) - 6. * linDis;
+    
+        vec2 rt = vec2(256. + lolDis * 0.7 + 0.6 * sin(0.3 * lolDis + Time * 2. * 3.14159265358979), 256. + angle * 32.0);
+    
+        x = roll3(uint2(rt), time);
+    }
+}
+
+vec3 fn08(vec2 uv) {
+    float time = fract(iTime / 12.);
+    float hue = time * 2. * PI;
+
+    float dist = log(uv.x*uv.x+uv.y*uv.y + 0.10) * 1.25;
+    float angle = atan(uv.y, uv.x);
+    const float spokes = float(17) / 2.;
+    const float spokes2 = float(55) / 2.;
+    
+    float s1 = spikes(angle * spokes - time * 2. * PI);
+    float s2 = spikes(angle * spokes2 + time * 2. * PI);
+    float und = sin(angle + time * 2. * PI + 0.5 * dist);
+    
+    vec3 color = gradient(
+        dist
+        + (0.3 + 0.1 * sin(2. * time * PI)) * s1
+        + (0.025 * (2. + sin(2. * time * PI + angle))) * s2
+        + 0.15 * und
+    );    
+}
+
+vec3 fn09(vec2 uv) { // star
+    float t = fract(iTime / 8.);
+    // Normalized pixel coordinates
+    float dist = log(uv.x*uv.x+uv.y*uv.y); // not real distance, but useful for log spirals
+    float angle = atan(uv.x, uv.y) / PI / 2.;
+    float angleLayer = t / 5.;
+    float offsetLayer = t * 3.;
+    float spaceLayer = 0.5;
+    vec3 colA = vec3(1.0, 0.3, 0.8);
+    vec3 colB = vec3(0.3, 0.7, 1.0);
+    vec3 colC = hue03(t * 2. * PI);
+    vec3 col = (vec3)fold2(t * 16.);
+    
+    if (dist >= -8.) {
+        for (float iRing = 0.; iRing < 25.; iRing += 1.) {
+            if (star1(angle - (iRing * angleLayer), dist, 1.1) < spaceLayer * (iRing - offsetLayer) - 7.){
+                switch (int(iRing) % 3) {
+                    case 0:
+                        col = colA;
+                        break;
+                    case 1:
+                        col = colB;
+                        break;
+                    case 2:
+                        col = colC;
+                }
+                break;
+            }
+        }
+    }
+    return col;
+}
+
+float distCustom(float x, float y)
+{
+    float n = -0.5 * abs(x) + y;
+    return log(
+        x * x + 1.5 * n * n
+    );
+}
+float spiralHeart(float x, float multi, float offset)
+{
+    return max(0.0, min(1.0, (sin(x * 3.14159265) + offset) * multi));
+}
+
+
+vec3 fn10(vec2 uv) { 
+    const float PI_3 = PI / 3.;
+    const float speed = 5.;
+    const float density = 3.;
+    const float period = 15.;
+    const vec3 color1 = vec3(1.2, 0.5, 0.8);
+    const vec3 color2 = vec3(0.3, 0.8, 1.0);
+    
+    float hue = iTime * 2. * PI / 5.;
+    vec3 color3 = (vec3(sin(hue), sin(hue + 2. * PI_3), sin(hue - 2. * PI_3)) + 1.0) * .5;
+    
+    float dist = log(uv.x*uv.x+uv.y*uv.y) / 2.;
+    float distH = distCustom(uv.x, uv.y);
+    float angle = atan(uv.y, uv.x);
+    
+    float timeH = 32.0 * cos(smoothstep(0.0, 1.0, fract(iTime / period)) * PI);
+    
+    // Time varying pixel color
+    float c1 = spiralHeart((distH + timeH) * density + 0.0, 1.8, -0.2);
+    float c2 = spiralHeart((distH + timeH) * density + 0.8, 4., -0.7);
+    float c3 = spiralHeart(dist * 4.0 + angle / PI + iTime * speed + PI, 3.0, -0.8);
+    // Output to screen
+    return vec3(
+		c1 * color1 + c2 * color2 + c3 * color3
+    );
+    
+}
+vec3 rainbow(float x) {
+    vec3 xyz = abs(mod(x + vec3(0.5,1.5,2.5), 3.) - 1.5);
+    return 1.0 - pow(
+        max((vec3)0.0, xyz * 2. - 1.)
+    , (vec3)2.);
+}
+
+vec3 fn11 (vec2 uv) {
+    // Time varying pixel color
+    float dist = log(dot(uv, uv));
+    float angle = atan(uv.y, uv.x) / 6.28318530718;
+    vec3 col = rainbow(dist * 0.2 + angle * 3.0 + sin(iTime * 2.0 + dist * 2.0) * 0.2 + sin(1.4 + -iTime + dist * 0.7) * -0.2);    
+}
+
 
 ////////////////////////////////////////////////////////////////
 //
